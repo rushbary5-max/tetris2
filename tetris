@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+    <title>테트리스 - 모바일 대응</title>
+    <style>
+        :root {
+            --bg: #1a1a1a;
+            --panel: #333;
+            --accent: #00d4ff;
+            --muted: #888;
+            --danger: #ff3e3e;
+        }
+        html,body { height:100%; margin:0; background:var(--bg); color:#fff; font-family:Arial, Helvetica, sans-serif; -webkit-tap-highlight-color: transparent; }
+        .app { min-height:100%; display:flex; align-items:center; justify-content:center; padding:12px; box-sizing:border-box; }
+        .wrap { display:flex; gap:16px; align-items:flex-start; max-width:1100px; width:100%; }
+        .score { font-size:2rem; font-weight:700; color:var(--accent); margin-bottom:8px; text-align:center; width:100%; }
+        #game-layout { display:flex; gap:12px; align-items:flex-start; position:relative; }
+        #canvas-container { position:relative; display:flex; flex-direction:column; align-items:center; gap:8px; }
+        canvas { background:#000; display:block; border:4px solid #fff; box-shadow:0 0 20px rgba(0,0,0,0.5); touch-action: none; }
+        #pause-overlay {
+            position:absolute; inset:0; display:none; z-index:40;
+            background:rgba(0,0,0,0.7); align-items:center; justify-content:center; flex-direction:column;
+            border:4px solid transparent;
+        }
+        #pause-overlay span {
+            font-size:1.4em; font-weight:700; color:var(--danger); text-shadow:0 0 10px rgba(255,62,62,0.8);
+            border:2px solid var(--danger); padding:10px 16px; background:rgba(0,0,0,0.45); border-radius:6px;
+        }
+
+        #next-container { display:flex; flex-direction:column; gap:10px; background:var(--panel); padding:12px; border-radius:8px; border:2px solid #555; }
+        .next-preview { width:80px; height:80px; background:#000; border:1px solid #444; }
+        .info-panel { display:flex; flex-direction:column; gap:10px; min-width:140px; align-items:center; }
+
+        .controls { display:flex; gap:8px; flex-wrap:wrap; justify-content:center; }
+        .control-btn {
+            -webkit-user-select:none; user-select:none;
+            width:64px; height:64px; border-radius:10px; border:none; background:rgba(255,255,255,0.06);
+            color:#fff; font-weight:700; font-size:0.9rem; display:flex; align-items:center; justify-content:center;
+            box-shadow:0 2px 0 rgba(0,0,0,0.6); transition:transform .08s, background .08s;
+            touch-action: manipulation;
+        }
+        .control-btn:active { transform:translateY(1px) scale(0.99); background:rgba(255,255,255,0.12); }
+        .hint { font-size:0.78rem; color:var(--muted); text-align:center; }
+
+        /* Mobile layout */
+        @media (max-width:760px) {
+            .wrap { flex-direction:column; align-items:center; gap:20px; }
+            #game-layout { flex-direction:column; align-items:center; }
+            #next-container { order:2; }
+            .info-panel { order:3; width:100%; }
+            .controls { width:100%; justify-content:space-around; }
+            .control-btn { width:72px; height:72px; font-size:1rem; border-radius:12px; }
+            .score { font-size:2.2rem; }
+            .next-preview { width:90px; height:90px; }
+        }
+
+        /* Prevent long-press menu on iOS Safari */
+        body, .control-btn { -webkit-touch-callout: none; }
+    </style>
+</head>
+<body>
+    <div class="app">
+        <div class="wrap">
+            <div style="width:100%; text-align:center;">
+                <div class="score" id="score">0</div>
+            </div>
+
+            <div id="game-layout" aria-live="polite">
+                <div id="next-container" aria-label="Next pieces">
+                    <div style="text-align:center; font-size:0.9em; margin-bottom:3px; color:#aaa;">NEXT</div>
+                    <canvas id="next0" class="next-preview" width="80" height="80"></canvas>
+                    <canvas id="next1" class="next-preview" width="80" height="80"></canvas>
+                    <canvas id="next2" class="next-preview" width="80" height="80"></canvas>
+                    <canvas id="next3" class="next-preview" width="80" height="80"></canvas>
+                </div>
+
+                <div id="canvas-container" style="display:flex;flex-direction:column;align-items:center;">
+                    <canvas id="tetris" width="240" height="400" aria-label="Tetris board"></canvas>
+                    <div id="pause-overlay" role="button" tabindex="0" aria-label="일시정지됨 - 탭하여 재개">
+                        <span>일시정지됨 (탭하여 재개)</span>
+                    </div>
+                </div>
+
+                <div class="info-panel" aria-hidden="false">
+                    <div class="controls" role="group" aria-label="Controls">
+                        <button class="control-btn" id="left-btn">◀</button>
+                        <button class="control-btn" id="rotate-btn">⤾</button>
+                        <button class="control-btn" id="right-btn">▶</button>
+                        <button class="control-btn" id="drop-btn">▼</button>
+                        <button class="control-btn" id="pause-btn">일시정지</button>
+                    </div>
+                    <div class="hint">
+                        P : 일시정지/재개 · ↑ : 회전 · ← → : 이동 · ↓ : 가속<br>
+                        터치: 버튼을 누르면 반복 입력/연속 낙하 지원
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    (() => {
+        // Canvas & contexts
+        const canvas = document.getElementById('tetris');
+        const ctx = canvas.getContext('2d', { alpha: false });
+        const nextIds = ['next0','next1','next2','next3'];
+        const nextCanvases = nextIds.map(id => document.getElementById(id));
+        const nextCtxs = nextCanvases.map(c => c.getContext('2d', { alpha: false }));
+
+        // Game constants
+        const PIECES = 'IJLOSTZ';
+        const COLORS = {
+            'I': '#00f0f0', 'J': '#0000f0', 'L': '#f0a000',
+            'O': '#f0f000', 'S': '#00f000', 'T': '#a000f0', 'Z': '#f00000'
+        };
+
+        // Arena size (columns x rows)
+        const ARENA_W = 12;
+        const ARENA_H = 20;
+
+        // State
+        let tileSize = 20; // logical tile size in CSS pixels (adjusted on resize)
+        let dpr = Math.max(1, window.devicePixelRatio || 1);
+        let paused = false;
+        let lastTime = 0;
+        let dropCounter = 0;
+        let dropInterval = 1000;
+        let softDropIntervalId = null;
+
+        // Input repeat helpers
+        const repeatState = { left: null, right: null };
+
+        // Board data
+        const arena = Array.from({length: ARENA_H}, () => Array(ARENA_W).fill(0));
+        const player = { pos: {x:0,y:0}, matrix: null, score: 0, type: null };
+        let pieceHistory = [];
+        let queue = [];
+        let forcedQueue = [];
+
+        // Utilities
+        function createPiece(type) {
+            if (type === 'I') return [[0,1,0,0],[0,1,0,0],[0,1,0,0],[0,1,0,0]];
+            if (type === 'J') return [[0,2,0],[0,2,0],[2,2,0]];
+            if (type === 'L') return [[0,3,0],[0,3,0],[0,3,3]];
+            if (type === 'O') return [[4,4],[4,4]];
+            if (type === 'S') return [[0,5,5],[5,5,0],[0,0,0]];
+            if (type === 'T') return [[0,6,0],[6,6,6],[0,0,0]];
+            if (type === 'Z') return [[7,7,0],[0,7,7],[0,0,0]];
+            return [[0]];
+        }
+
+        function generateNextPiece() {
+            if (forcedQueue.length > 0) return forcedQueue.shift();
+
+            if (pieceHistory.length > 0 && pieceHistory.length % 15 === 0) {
+                const last15 = pieceHistory.slice(-15);
+                let missing = [...PIECES].filter(p => !last15.includes(p)).sort();
+                if (missing.length > 0) {
+                    forcedQueue = missing;
+                    return forcedQueue.shift();
+                }
+            }
+
+            let next;
+            while (true) {
+                next = PIECES[Math.random() * PIECES.length | 0];
+                const last2 = pieceHistory.slice(-2);
+                if (last2.length === 2 && last2[0] === next && last2[1] === next) continue;
+                break;
+            }
+            return next;
+        }
+
+        function refillQueue() {
+            while (queue.length < 5) {
+                const p = generateNextPiece();
+                queue.push(p);
+                pieceHistory.push(p);
+            }
+        }
+
+        function playerReset() {
+            refillQueue();
+            player.type = queue.shift();
+            player.matrix = createPiece(player.type);
+            player.pos.y = 0;
+            player.pos.x = (ARENA_W / 2 | 0) - (player.matrix[0].length / 2 | 0);
+
+            if (collide(arena, player)) {
+                arena.forEach(row => row.fill(0));
+                player.score = 0;
+                pieceHistory = [];
+            }
+            drawNext();
+        }
+
+        function collide(arena, player) {
+            const m = player.matrix, o = player.pos;
+            for (let y = 0; y < m.length; ++y) {
+                for (let x = 0; x < m[y].length; ++x) {
+                    if (m[y][x] !== 0) {
+                        if (!arena[y + o.y] || (arena[y + o.y][x + o.x]) !== 0) return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        function merge(arena, player) {
+            player.matrix.forEach((row, y) => {
+                row.forEach((value, x) => {
+                    if (value !== 0) arena[y + player.pos.y][x + player.pos.x] = value;
+                });
+            });
+        }
+
+        function arenaSweep() {
+            let rowCount = 1;
+            outer: for (let y = arena.length - 1; y > 0; --y) {
+                for (let x = 0; x < arena[y].length; ++x) {
+                    if (arena[y][x] === 0) continue outer;
+                }
+                const row = arena.splice(y, 1)[0].fill(0);
+                arena.unshift(row);
+                ++y;
+                player.score += rowCount * 10;
+                rowCount *= 2;
+            }
+        }
+
+        function rotate(matrix, dir) {
+            for (let y = 0; y < matrix.length; ++y) {
+                for (let x = 0; x < y; ++x) [matrix[x][y], matrix[y][x]] = [matrix[y][x], matrix[x][y]];
+            }
+            if (dir > 0) matrix.forEach(row => row.reverse()); else matrix.reverse();
+        }
+
+        function playerDrop() {
+            player.pos.y++;
+            if (collide(arena, player)) {
+                player.pos.y--;
+                merge(arena, player);
+                playerReset();
+                arenaSweep();
+            }
+            dropCounter = 0;
+        }
+
+        // Draw helpers: use setTransform each time on resize to ensure pixel-perfect scaling
+        function drawMatrix(matrix, offset, type = null, context = ctx) {
+            for (let y = 0; y < matrix.length; ++y) {
+                for (let x = 0; x < matrix[y].length; ++x) {
+                    const value = matrix[y][x];
+                    if (value !== 0) {
+                        context.fillStyle = type ? COLORS[type] : Object.values(COLORS)[value-1];
+                        context.fillRect(x + offset.x, y + offset.y, 1, 1);
+                    }
+                }
+            }
+        }
+
+        function draw() {
+            // clear main
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, ARENA_W, ARENA_H);
+            drawMatrix(arena, {x:0,y:0}, null, ctx);
+            if (player.matrix) drawMatrix(player.matrix, player.pos, player.type, ctx);
+            document.getElementById('score').innerText = player.score;
+        }
+
+        function drawNext() {
+            // draw each preview canvas in its own logical coordinate system (4x4 grid)
+            nextCtxs.forEach((nctx, i) => {
+                const cvs = nextCanvases[i];
+                // logical preview size: 4x4 grid (we will set transform on resize)
+                nctx.fillStyle = '#000';
+                nctx.fillRect(0,0,4,4);
+                const type = queue[i];
+                if (!type) return;
+                const matrix = createPiece(type);
+                // center piece in the 4x4 preview area
+                const offsetX = Math.max(0, Math.floor((4 - matrix[0].length)/2));
+                const offsetY = Math.max(0, Math.floor((4 - matrix.length)/2));
+                matrix.forEach((row, y) => {
+                    row.forEach((value, x) => {
+                        if (value !== 0) {
+                            nctx.fillStyle = COLORS[type];
+                            nctx.fillRect(x + offsetX, y + offsetY, 1, 1);
+                        }
+                    });
+                });
+            });
+        }
+
+        // Responsive canvas resizing with devicePixelRatio support
+        function resizeCanvasToFit() {
+            dpr = Math.max(1, window.devicePixelRatio || 1);
+
+            // choose tileSize based on available viewport space to keep board visible on mobile
+            const maxWidth = Math.min(window.innerWidth - 40, 600); // leave padding
+            const maxHeight = Math.max(window.innerHeight - 160, 300);
+            const tileSizeByWidth = Math.floor(maxWidth / ARENA_W);
+            const tileSizeByHeight = Math.floor(maxHeight / ARENA_H);
+            tileSize = Math.max(8, Math.min(tileSizeByWidth, tileSizeByHeight));
+
+            // set logical canvas size (in device pixels)
+            canvas.style.width = (ARENA_W * tileSize) + 'px';
+            canvas.style.height = (ARENA_H * tileSize) + 'px';
+            canvas.width = ARENA_W * tileSize * dpr;
+            canvas.height = ARENA_H * tileSize * dpr;
+
+            // set transform so drawing uses 1x1 tiles logically
+            ctx.setTransform(tileSize * dpr, 0, 0, tileSize * dpr, 0, 0);
+
+            // Next previews: logical size 4x4
+            nextCanvases.forEach(c => {
+                // keep square but base on CSS size
+                const cssW = parseFloat(getComputedStyle(c).width) || c.width;
+                const cssTile = Math.max(6, Math.floor(cssW / 4));
+                c.style.width = (cssTile*4) + 'px';
+                c.style.height = (cssTile*4) + 'px';
+                c.width = cssTile * 4 * dpr;
+                c.height = cssTile * 4 * dpr;
+            });
+            // set transforms for preview contexts
+            nextCtxs.forEach(nctx => nctx.setTransform((parseFloat(nctx.canvas.style.width) / 4) * dpr, 0, 0, (parseFloat(nctx.canvas.style.height) / 4) * dpr, 0, 0));
+
+            // redraw
+            drawNext();
+            draw();
+        }
+
+        // Pause toggle and overlay
+        const pauseOverlay = document.getElementById('pause-overlay');
+        const pauseBtn = document.getElementById('pause-btn');
+
+        function showOverlay(show) {
+            pauseOverlay.style.display = show ? 'flex' : 'none';
+            pauseBtn.innerText = show ? '재개하기' : '일시정지';
+        }
+
+        function togglePause(force) {
+            paused = (typeof force === 'boolean') ? force : !paused;
+            if (paused) {
+                showOverlay(true);
+            } else {
+                showOverlay(false);
+                lastTime = performance.now();
+            }
+        }
+
+        // Input handlers (keyboard)
+        document.addEventListener('keydown', (e) => {
+            // normalize keys
+            const k = e.key;
+            if (k === 'p' || k === 'P') { e.preventDefault(); togglePause(); return; }
+            if (paused) return;
+
+            if (k === 'ArrowLeft') { e.preventDefault(); player.pos.x--; if (collide(arena, player)) player.pos.x++; }
+            else if (k === 'ArrowRight') { e.preventDefault(); player.pos.x++; if (collide(arena, player)) player.pos.x--; }
+            else if (k === 'ArrowDown') { e.preventDefault(); playerDrop(); }
+            else if (k === 'ArrowUp') { e.preventDefault(); const pos = player.pos.x; rotate(player.matrix, 1); if (collide(arena, player)) { rotate(player.matrix, -1); player.pos.x = pos; } }
+        });
+
+        // Pointer (touch) controls
+        function makeButtonRepeat(element, onAction, options = {}) {
+            // options: repeatDelay (ms before repeating), repeatInterval (ms between repeats)
+            const delay = options.repeatDelay || 200;
+            const interval = options.repeatInterval || 80;
+            let timeoutId = null;
+            let intervalId = null;
+
+            function start(e) {
+                if (e) e.preventDefault();
+                onAction();
+                // start repeating after small delay
+                timeoutId = setTimeout(() => {
+                    intervalId = setInterval(onAction, interval);
+                }, delay);
+            }
+            function stop(e) {
+                if (e) e && e.preventDefault();
+                clearTimeout(timeoutId); timeoutId = null;
+                clearInterval(intervalId); intervalId = null;
+            }
+
+            element.addEventListener('pointerdown', start, {passive:false});
+            element.addEventListener('pointerup', stop);
+            element.addEventListener('pointercancel', stop);
+            element.addEventListener('pointerleave', stop);
+            // also support mouseleave to cancel
+            element.addEventListener('mouseleave', stop);
+            // prevent context menu long press
+            element.addEventListener('contextmenu', (ev) => ev.preventDefault());
+            return { start, stop };
+        }
+
+        // left/right buttons
+        const leftBtn = document.getElementById('left-btn');
+        const rightBtn = document.getElementById('right-btn');
+        const rotateBtn = document.getElementById('rotate-btn');
+        const dropBtn = document.getElementById('drop-btn');
+
+        makeButtonRepeat(leftBtn, () => {
+            if (paused) return;
+            player.pos.x--;
+            if (collide(arena, player)) player.pos.x++;
+            draw();
+        }, { repeatDelay: 250, repeatInterval: 120 });
+
+        makeButtonRepeat(rightBtn, () => {
+            if (paused) return;
+            player.pos.x++;
+            if (collide(arena, player)) player.pos.x--;
+            draw();
+        }, { repeatDelay: 250, repeatInterval: 120 });
+
+        // rotate - single action
+        rotateBtn.addEventListener('pointerdown', (ev) => {
+            ev.preventDefault();
+            if (paused) return;
+            const pos = player.pos.x;
+            rotate(player.matrix, 1);
+            if (collide(arena, player)) { rotate(player.matrix, -1); player.pos.x = pos; }
+            draw();
+        }, { passive:false });
+
+        // drop - continuous soft drop while pressed
+        dropBtn.addEventListener('pointerdown', (ev) => {
+            ev.preventDefault();
+            if (paused) return;
+            // immediate drop
+            playerDrop();
+            draw();
+            // then start continuous soft drop
+            if (softDropIntervalId) clearInterval(softDropIntervalId);
+            softDropIntervalId = setInterval(() => {
+                playerDrop();
+                draw();
+            }, 80);
+        }, { passive:false });
+
+        ['pointerup','pointercancel','pointerleave'].forEach(evt => {
+            dropBtn.addEventListener(evt, () => {
+                if (softDropIntervalId) { clearInterval(softDropIntervalId); softDropIntervalId = null; }
+            });
+        });
+
+        // pause button
+        pauseBtn.addEventListener('pointerdown', (ev) => { ev.preventDefault(); togglePause(); }, { passive:false });
+
+        // overlay tap to resume
+        pauseOverlay.addEventListener('pointerdown', (ev) => {
+            ev.preventDefault();
+            togglePause(false);
+        }, { passive:false });
+
+        // also handle keyboard focus activation
+        pauseOverlay.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') togglePause(false); });
+
+        // prevent accidental scrolling on touch inside canvas and controls
+        ['touchstart','touchmove','touchend','touchcancel'].forEach(ev => {
+            document.addEventListener(ev, (e) => {
+                // if touch is inside canvas or controls, prevent page scroll
+                const path = e.composedPath && e.composedPath();
+                if (path) {
+                    for (const el of path) {
+                        if (el === canvas || el.classList && el.classList.contains('control-btn')) { e.preventDefault(); break; }
+                    }
+                }
+            }, { passive:false });
+        });
+
+        // pause when tab hidden or orientation changes (conservative)
+        document.addEventListener('visibilitychange', () => { if (document.hidden) togglePause(true); });
+        window.addEventListener('orientationchange', () => { togglePause(true); setTimeout(resizeCanvasToFit, 250); });
+        window.addEventListener('resize', resizeCanvasToFit);
+
+        // Game loop
+        function update(time = 0) {
+            if (!paused) {
+                if (!lastTime) lastTime = time;
+                const deltaTime = time - lastTime;
+                lastTime = time;
+                dropCounter += deltaTime;
+                if (dropCounter > dropInterval) playerDrop();
+                draw();
+            }
+            requestAnimationFrame(update);
+        }
+
+        // Initialization
+        function init() {
+            // set transforms and size
+            resizeCanvasToFit();
+            // initial queue and player
+            playerReset();
+            // start loop
+            lastTime = performance.now();
+            requestAnimationFrame(update);
+        }
+
+        // Kick off
+        init();
+
+        // Expose some internals for easier debugging (optional)
+        window._trtris = { arena, player, refillQueue, resizeCanvasToFit, togglePause };
+    })();
+    </script>
+</body>
+</html>
